@@ -1,0 +1,184 @@
+{
+  "evaluation_timestamp": "2026-10-11 11:19:04",
+  "dataset": {
+    "source": "keypoint.csv",
+    "total_samples": 7669,
+    "train_samples": 6135,
+    "test_samples": 1534,
+    "test_split_ratio": 0.2,
+    "random_seed": 42,
+    "feature_dimension": 42,
+    "validated_classes": [
+      "A",
+      "B",
+      "C"
+    ],
+    "class_distribution": {
+      "A": 4264,
+      "B": 2206,
+      "C": 1199
+    },
+    "data_limitation_statement": "The repository's keypoint.csv currently contains pre-computed landmark samples for classes 'A', 'B', and 'C'. Therefore, empirical test-set metrics can only be statistically validated on these 3 classes."
+  },
+  "model": {
+    "path": "model.h5",
+    "architecture": "Deep Feedforward Neural Network (5 Dense Layers + Dropout)",
+    "input_dimension": 42,
+    "output_neurons": 35,
+    "all_output_classes": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H",
+      "I",
+      "J",
+      "K",
+      "L",
+      "M",
+      "N",
+      "O",
+      "P",
+      "Q",
+      "R",
+      "S",
+      "T",
+      "U",
+      "V",
+      "W",
+      "X",
+      "Y",
+      "Z"
+    ],
+    "unvalidated_classes_count": 32,
+    "unvalidated_classes": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H",
+      "I",
+      "J",
+      "K",
+      "L",
+      "M",
+      "N",
+      "O",
+      "P",
+      "Q",
+      "R",
+      "S",
+      "T",
+      "U",
+      "V",
+      "W",
+      "X",
+      "Y",
+      "Z"
+    ]
+  },
+  "metrics_on_held_out_test_set": {
+    "test_accuracy": 0.9785,
+    "macro_precision": 1.0,
+    "macro_recall": 0.9548,
+    "macro_f1": 0.9758,
+    "weighted_precision": 1.0,
+    "weighted_recall": 0.9785,
+    "weighted_f1": 0.9885
+  },
+  "per_class_performance": {
+    "A": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 853.0
+    },
+    "B": {
+      "precision": 1.0,
+      "recall": 0.9977324263038548,
+      "f1-score": 0.9988649262202043,
+      "support": 441.0
+    },
+    "C": {
+      "precision": 1.0,
+      "recall": 0.8666666666666667,
+      "f1-score": 0.9285714285714286,
+      "support": 240.0
+    },
+    "micro avg": {
+      "precision": 1.0,
+      "recall": 0.9784876140808344,
+      "f1-score": 0.9891268533772652,
+      "support": 1534.0
+    },
+    "macro avg": {
+      "precision": 1.0,
+      "recall": 0.9547996976568406,
+      "f1-score": 0.9758121182638776,
+      "support": 1534.0
+    },
+    "weighted avg": {
+      "precision": 1.0,
+      "recall": 0.9784876140808344,
+      "f1-score": 0.9884984193743501,
+      "support": 1534.0
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "A",
+      "B",
+      "C"
+    ],
+    "matrix": [
+      [
+        853,
+        0,
+        0
+      ],
+      [
+        0,
+        440,
+        0
+      ],
+      [
+        0,
+        0,
+        208
+      ]
+    ]
+  },
+  "false_predictions_outside_ground_truth": {
+    "E": 32,
+    "G": 1
+  },
+  "latency_benchmark_ms": {
+    "mean_ms": 0.1459,
+    "median_p50_ms": 0.1323,
+    "p95_ms": 0.206,
+    "p99_ms": 0.2932,
+    "throughput_inferences_per_sec": 6854.9,
+    "measured_iterations": 1000
+  }
+}

@@ -1,113 +1,290 @@
-import cv2
-import mediapipe as mp
+"""
+Real-Time Indian Sign Language Detection and Sentence Construction Pipeline.
+Upgraded with MediaPipe 3D Landmark Tracking, Vectorized Neural Inference,
+Temporal Prediction Smoothing, Gesture Debouncing, and an Interactive On-Screen HUD.
+"""
+
+import os
+import sys
 import copy
-import itertools
-from tensorflow import keras
+import time
+from typing import Optional
+
+import cv2
 import numpy as np
-import pandas as pd
-import string
+import mediapipe as mp
 
-# load the saved model from file
-model = keras.models.load_model("model.h5")
+from core.landmark_processor import LandmarkProcessor
+from core.model_engine import ISLModelEngine
+from core.phrase_buffer import PhraseBuffer
 
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
-mp_hands = mp.solutions.hands
 
-alphabet =  ['1','2','3','4','5','6','7','8','9']
-alphabet += list(string.ascii_uppercase)
-# functions
-def calc_landmark_list(image, landmarks):
-    image_width, image_height = image.shape[1], image.shape[0]
+def draw_hud(
+    frame: np.ndarray,
+    prediction_info: dict,
+    phrase_buffer: PhraseBuffer,
+    fps: float
+) -> np.ndarray:
+    """
+    Renders an accessible, modern Heads-Up Display (HUD) overlay directly onto the video frame:
+    - Top Status Bar: Detected sign, confidence percentage, stability meter, FPS.
+    - Bottom Sentence Bar: Accumulated words/sentence with active typing indicator.
+    - Control Shortcuts: Space, Backspace, Clear, Quit.
+    """
+    h, w, _ = frame.shape
+    overlay = frame.copy()
 
-    landmark_point = []
+    # --- Top Header Overlay (Status & Confidence) ---
+    header_height = 85
+    cv2.rectangle(overlay, (0, 0), (w, header_height), (15, 23, 42), -1)  # Dark navy background
 
-    # Keypoint
-    for _, landmark in enumerate(landmarks.landmark):
-        landmark_x = min(int(landmark.x * image_width), image_width - 1)
-        landmark_y = min(int(landmark.y * image_height), image_height - 1)
-        # landmark_z = landmark.z
+    # Transparency blend
+    cv2.addWeighted(overlay, 0.78, frame, 0.22, 0, frame)
 
-        landmark_point.append([landmark_x, landmark_y])
+    label = prediction_info.get("smoothed_label") or "Searching..."
+    conf = prediction_info.get("confidence", 0.0)
+    stability = prediction_info.get("stability_progress", 0.0)
 
-    return landmark_point
+    # 1. Detected Sign Title
+    cv2.putText(
+        frame,
+        f"SIGN: {label}",
+        (20, 42),
+        cv2.FONT_HERSHEY_DUPLEX,
+        1.1,
+        (56, 189, 248) if label != "Searching..." else (148, 163, 184), # Cyan or muted gray
+        2,
+        cv2.LINE_AA
+    )
 
-def pre_process_landmark(landmark_list):
-    temp_landmark_list = copy.deepcopy(landmark_list)
+    # 2. Confidence Indicator
+    conf_text = f"Confidence: {int(conf * 100)}%" if label != "Searching..." else "Stand by"
+    cv2.putText(
+        frame,
+        conf_text,
+        (20, 72),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.58,
+        (226, 232, 240),
+        1,
+        cv2.LINE_AA
+    )
 
-    # Convert to relative coordinates
-    base_x, base_y = 0, 0
-    for index, landmark_point in enumerate(temp_landmark_list):
-        if index == 0:
-            base_x, base_y = landmark_point[0], landmark_point[1]
+    # 3. Stability Progress Bar (Hold-to-commit meter)
+    bar_x = w - 240
+    bar_y = 35
+    bar_w = 200
+    bar_h = 16
+    cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (51, 65, 85), -1)
+    fill_w = int(bar_w * stability)
+    if fill_w > 0:
+        bar_color = (34, 197, 94) if stability >= 0.95 else (14, 165, 233)
+        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), bar_color, -1)
+    cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (148, 163, 184), 1)
 
-        temp_landmark_list[index][0] = temp_landmark_list[index][0] - base_x
-        temp_landmark_list[index][1] = temp_landmark_list[index][1] - base_y
+    cv2.putText(
+        frame,
+        f"HOLD PROGRESS ({int(stability * 100)}%)",
+        (bar_x, bar_y - 8),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (203, 213, 225),
+        1,
+        cv2.LINE_AA
+    )
 
-    # Convert to a one-dimensional list
-    temp_landmark_list = list(
-        itertools.chain.from_iterable(temp_landmark_list))
+    # FPS display
+    cv2.putText(
+        frame,
+        f"FPS: {int(fps)}",
+        (w - 75, 75),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (100, 116, 139),
+        1,
+        cv2.LINE_AA
+    )
 
-    # Normalization
-    max_value = max(list(map(abs, temp_landmark_list)))
+    # --- Bottom Sentence Bar ---
+    sentence_h = 90
+    sentence_y = h - sentence_h
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, sentence_y), (w, h), (15, 23, 42), -1)
+    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
 
-    def normalize_(n):
-        return n / max_value
+    full_text = phrase_buffer.get_full_text()
+    display_text = f"> {full_text}" if full_text else "> [Perform sign to begin typing...]"
+    text_color = (255, 255, 255) if full_text else (148, 163, 184)
 
-    temp_landmark_list = list(map(normalize_, temp_landmark_list))
+    # Truncate text from left if it exceeds frame width
+    if len(display_text) > 45:
+        display_text = "> ..." + display_text[-42:]
 
-    return temp_landmark_list
+    cv2.putText(
+        frame,
+        display_text,
+        (20, sentence_y + 36),
+        cv2.FONT_HERSHEY_DUPLEX,
+        0.85,
+        text_color,
+        2,
+        cv2.LINE_AA
+    )
 
-# For webcam input:
-cap = cv2.VideoCapture(0)
-with mp_hands.Hands(
-    model_complexity=0,
-    max_num_hands=2,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5) as hands:
-  while cap.isOpened():
-    success, image = cap.read()
-    # Flip the image horizontally for a selfie-view display.
-    image = cv2.flip(image, 1)
-    if not success:
-      print("Ignoring empty camera frame.")
-      # If loading a video, use 'break' instead of 'continue'.
-      continue
+    # Control shortcuts legend
+    controls_text = "HOTKEYS: [SPACE] Space  |  [BKSP] Undo  |  [C] Clear  |  [Q] Exit"
+    cv2.putText(
+        frame,
+        controls_text,
+        (20, sentence_y + 70),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        (56, 189, 248),
+        1,
+        cv2.LINE_AA
+    )
 
-    # To improve performance, optionally mark the image as not writeable to pass by reference.
-    image.flags.writeable = False
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    results = hands.process(image)
+    return frame
 
-    # Draw the hand annotations on the image.
-    image.flags.writeable = True
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    debug_image = copy.deepcopy(image)
 
-    if results.multi_hand_landmarks:
-      for hand_landmarks, handedness in zip(results.multi_hand_landmarks,results.multi_handedness):
-        landmark_list = calc_landmark_list(debug_image, hand_landmarks)
-        # Conversion to relative coordinates / normalized coordinates
-        pre_processed_landmark_list = pre_process_landmark(landmark_list)
-        # Draw the landmarks
-        mp_drawing.draw_landmarks(
-            image,
-            hand_landmarks,
-            mp_hands.HAND_CONNECTIONS,
-            mp_drawing_styles.get_default_hand_landmarks_style(),
-            mp_drawing_styles.get_default_hand_connections_style())
-        df = pd.DataFrame(pre_processed_landmark_list).transpose()
+def main():
+    print("==================================================================")
+    print("  INDIAN SIGN LANGUAGE (ISL) REAL-TIME RECOGNITION SYSTEM")
+    print("  Powered by MediaPipe Hands and Deep Neural Network Engine")
+    print("==================================================================")
 
-        # predict the sign language
-        predictions = model.predict(df, verbose=0)
-        # get the predicted class for each sample
-        predicted_classes = np.argmax(predictions, axis=1)
-        label = alphabet[predicted_classes[0]]
-        cv2.putText(image, label, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 2)
-        print(alphabet[predicted_classes[0]])
-        print("------------------------")
-    # output image
-    cv2.imshow('Indian sign language detector', image)
-    if cv2.waitKey(5) & 0xFF == 27:
-      break
-cap.release()
+    # Initialize neural model engine and phrase buffer
+    try:
+        model_engine = ISLModelEngine()
+        print(f"Loaded ISL Model with {len(model_engine.get_supported_classes())} supported classes.")
+    except Exception as e:
+        print(f"[FATAL] Failed to initialize model engine: {e}")
+        return
+
+    phrase_buffer = PhraseBuffer(window_size=8, hold_threshold=14, cooldown_frames=16, confidence_threshold=0.65)
+
+    # Initialize MediaPipe Hands solution
+    mp_drawing = mp.solutions.drawing_utils
+    mp_drawing_styles = mp.solutions.drawing_styles
+    mp_hands = mp.solutions.hands
+
+    # Access webcam
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("[ERROR] Camera 0 could not be opened. Trying Camera index 1...")
+        cap = cv2.VideoCapture(1)
+        if not cap.isOpened():
+            print("[FATAL] No accessible webcam found. Please verify camera hardware/permissions.")
+            return
+
+    # Set camera resolution for crisp performance
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+    fps = 30.0
+    prev_time = time.time()
+
+    print("[INFO] Starting real-time detection stream. Press 'q' or 'ESC' to exit.")
+
+    with mp_hands.Hands(
+        model_complexity=0,
+        max_num_hands=2,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    ) as hands:
+
+        while cap.isOpened():
+            success, image = cap.read()
+            if not success:
+                print("[WARNING] Empty frame received from webcam. Retrying...")
+                time.sleep(0.05)
+                continue
+
+            current_time = time.time()
+            fps = 1.0 / max(0.001, (current_time - prev_time))
+            prev_time = current_time
+
+            # Flip horizontally for selfie mirror perspective
+            image = cv2.flip(image, 1)
+            frame_h, frame_w, _ = image.shape
+
+            # Convert BGR to RGB for MediaPipe inference
+            image.flags.writeable = False
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            results = hands.process(image_rgb)
+            image.flags.writeable = True
+
+            prediction_summary = {"smoothed_label": None, "confidence": 0.0, "stability_progress": 0.0}
+
+            if results.multi_hand_landmarks:
+                # Primary hand processing
+                for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+                    # 1. Compute pixel coordinates
+                    landmark_list = LandmarkProcessor.calc_landmark_list(frame_w, frame_h, hand_landmarks)
+
+                    # 2. Geometric translation and normalization
+                    normalized_features = LandmarkProcessor.pre_process_landmark(landmark_list)
+
+                    # 3. Neural inference
+                    pred = model_engine.predict(normalized_features, confidence_threshold=0.60)
+
+                    # 4. Temporal phrase buffer update
+                    buf_status = phrase_buffer.process_frame_prediction(pred)
+
+                    prediction_summary = {
+                        "smoothed_label": buf_status.get("smoothed_label") or pred.get("label"),
+                        "confidence": pred.get("confidence", 0.0),
+                        "stability_progress": buf_status.get("stability_progress", 0.0)
+                    }
+
+                    # Draw hand skeleton connections
+                    mp_drawing.draw_landmarks(
+                        image,
+                        hand_landmarks,
+                        mp_hands.HAND_CONNECTIONS,
+                        mp_drawing_styles.get_default_hand_landmarks_style(),
+                        mp_drawing_styles.get_default_hand_connections_style()
+                    )
+
+                    # Draw bounding box around hand
+                    bbox = LandmarkProcessor.get_bounding_box(frame_w, frame_h, hand_landmarks)
+                    cv2.rectangle(image, (bbox[0], bbox[1]), (bbox[2], bbox[3]), (56, 189, 248), 2)
+                    hand_label = handedness.classification[0].label
+                    cv2.putText(
+                        image,
+                        f"{hand_label}: {pred['label']}",
+                        (bbox[0], max(20, bbox[1] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (34, 197, 94) if pred['is_confident'] else (239, 68, 68),
+                        2,
+                        cv2.LINE_AA
+                    )
+            else:
+                phrase_buffer.reset_stability()
+
+            # Render Heads-Up Display overlay
+            rendered_frame = draw_hud(image, prediction_summary, phrase_buffer, fps)
+
+            # Display window
+            cv2.imshow("Indian Sign Language Recognition System", rendered_frame)
+
+            # Keyboard event listener
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27 or key == ord('q') or key == ord('Q'):
+                break
+            elif key == 32:  # Space key
+                phrase_buffer.add_space()
+            elif key == 8 or key == 127:  # Backspace
+                phrase_buffer.backspace()
+            elif key == ord('c') or key == ord('C'):  # Clear
+                phrase_buffer.clear()
+
+    cap.release()
+    cv2.destroyAllWindows()
+    print("[INFO] Application closed successfully.")
+    print("Final Constructed Sentence:", phrase_buffer.get_full_text())
+
+
+if __name__ == "__main__":
+    main()
